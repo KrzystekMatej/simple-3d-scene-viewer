@@ -1,8 +1,8 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub struct Time {
     last_frame: Instant,
-    delta_time: f32,
+    delta_time: Duration,
     start_time: Instant,
 }
 
@@ -11,49 +11,53 @@ impl Time {
         let now = Instant::now();
         Self {
             last_frame: now,
-            delta_time: 0.0,
+            delta_time: Duration::ZERO,
             start_time: now,
         }
     }
 
     pub fn update(&mut self) {
         let now = Instant::now();
-        let delta = now.duration_since(self.last_frame);
-        self.delta_time = delta.as_secs_f32();
+        self.delta_time = now.duration_since(self.last_frame);
         self.last_frame = now;
     }
 
-    pub fn delta_time(&self) -> f32 {
+    pub fn delta(&self) -> Duration {
         self.delta_time
     }
 
-    pub fn elapsed_time(&self) -> f32 {
-        self.start_time.elapsed().as_secs_f32()
+    pub fn elapsed(&self) -> Duration {
+        self.start_time.elapsed()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::Time;
     use std::thread::sleep;
     use std::time::Duration;
 
     #[test]
-    fn time_starts_with_zero_delta() {
-        let time = Time::new();
-
-        assert_eq!(time.delta_time(), 0.0);
-        assert!(time.elapsed_time() >= 0.0);
-    }
-
-    #[test]
-    fn update_increases_delta_time() {
+    fn time_increases() {
         let mut time = Time::new();
 
-        sleep(Duration::from_millis(1));
-        time.update();
+        let sleep_1 = Duration::from_millis(20);
+        let sleep_2 = Duration::from_millis(30);
 
-        assert!(time.delta_time() > 0.0);
-        assert!(time.elapsed_time() > 0.0);
+        sleep(sleep_1);
+        time.update();
+        let delta_1 = time.delta();
+        let elapsed_1 = time.elapsed();
+
+        sleep(sleep_2);
+        time.update();
+        let delta_2 = time.delta();
+        let elapsed_2 = time.elapsed();
+
+        assert!(delta_1 >= sleep_1);
+        assert!(delta_2 >= sleep_2);
+
+        assert!(elapsed_1 >= sleep_1);
+        assert!(elapsed_2 >= sleep_1 + sleep_2);
     }
 }
