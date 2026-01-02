@@ -1,5 +1,4 @@
-use crate::{core::Time, core::Window};
-use serde::Deserialize;
+use crate::{core::Time};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -7,24 +6,27 @@ use winit::{
     window::WindowId,
 };
 
-#[derive(Deserialize)]
-pub struct AppConfig {
-    pub window_title: String,
-    pub width: u32,
-    pub height: u32,
+pub trait WindowHandler {
+    fn id(&self) -> WindowId;
+    fn request_redraw(&self);
+    fn handle_event(&mut self, event_loop: &ActiveEventLoop, event: &WindowEvent);
 }
 
-const DEFAULT_CONFIG: &str = include_str!("app_config.toml");
+pub trait WindowFactory {
+    fn create(&mut self, event_loop: &ActiveEventLoop) -> Box<dyn WindowHandler>;
+}
 
 pub struct Application {
     time: Time,
-    main_window: Option<Window>,
+    main_window_factory: Box<dyn WindowFactory>,
+    main_window: Option<Box<dyn WindowHandler>>,
 }
 
 impl Application {
-    pub fn new() -> Self {
+    pub fn new(main_window_factory: Box<dyn WindowFactory>) -> Self {
         Application {
             time: Time::new(),
+            main_window_factory: main_window_factory,
             main_window: None,
         }
     }
@@ -33,17 +35,8 @@ impl Application {
 impl ApplicationHandler for Application {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         event_loop.set_control_flow(ControlFlow::Poll);
-
         if self.main_window.is_none() {
-            let config: AppConfig =
-                toml::from_str(DEFAULT_CONFIG).expect("Failed to load default configuration");
-            let window = Window::create_main_window(
-                event_loop,
-                &config.window_title,
-                config.width,
-                config.height,
-            );
-            self.main_window = Some(window);
+            self.main_window = Some(self.main_window_factory.create(event_loop));
         }
     }
 
@@ -53,45 +46,17 @@ impl ApplicationHandler for Application {
             None => return,
         };
 
-        if id != main_window.raw().id() {
+        if id != main_window.id() {
             return;
         }
 
-        match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => {
-                main_window.resize(size);
-                main_window.raw().request_redraw();
-            }
-            WindowEvent::ScaleFactorChanged { .. } => {
-                let size = main_window.raw().inner_size();
-                main_window.resize(size);
-                main_window.raw().request_redraw();
-            }
-            WindowEvent::RedrawRequested => {
-                main_window.render_clear(0.1, 0.12, 0.16, 1.0);
-            }
-            _ => {}
-        }
+        main_window.handle_event(event_loop, &event);
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         self.time.update();
         if let Some(w) = &self.main_window {
-            w.raw().request_redraw();
+            w.request_redraw();
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_config_parses() {
-        let cfg: AppConfig = toml::from_str(DEFAULT_CONFIG).unwrap();
-        assert!(!cfg.window_title.is_empty());
-        assert!(cfg.width > 0);
-        assert!(cfg.height > 0);
     }
 }
