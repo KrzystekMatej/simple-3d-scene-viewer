@@ -1,6 +1,6 @@
 mod app;
 mod core;
-use app::MainWindowFactory;
+use app::SceneViewerAppFactory;
 use core::Application;
 use winit::event_loop::EventLoop;
 
@@ -17,6 +17,7 @@ fn init_logger() {
 fn main() {
     init_logger();
     let event_loop = EventLoop::new().expect("Failed to create event loop.");
-    let mut app = Application::new(Box::new(MainWindowFactory::new()));
+    let app_factory = SceneViewerAppFactory::new(app::load_default_config());
+    let mut app = Application::new(Box::new(app_factory));
     event_loop.run_app(&mut app).unwrap();
 }

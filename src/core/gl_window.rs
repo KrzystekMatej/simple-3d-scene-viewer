@@ -7,7 +7,7 @@ use glutin::{
     surface::{Surface, SurfaceAttributesBuilder, SwapInterval, WindowSurface},
 };
 use glutin_winit::DisplayBuilder;
-use std::{ffi::CString, num::NonZeroU32};
+use std::{ffi::CString, num::NonZeroU32, sync::Arc};
 use winit::{
     dpi::PhysicalSize,
     event_loop::ActiveEventLoop,
@@ -19,7 +19,7 @@ pub struct GlWindow {
     winit_window: WinitWindow,
     gl_surface: Surface<WindowSurface>,
     gl_context: PossiblyCurrentContext,
-    gl: glow::Context,
+    gl: Arc<glow::Context>,
 }
 
 impl GlWindow {
@@ -31,7 +31,9 @@ impl GlWindow {
         let display_builder = DisplayBuilder::new().with_window_attributes(Some(attributes));
 
         let (window, gl_config) = display_builder
-            .build(event_loop, template, |configs| configs.max_by_key(|c| c.num_samples()).unwrap())
+            .build(event_loop, template, |configs| {
+                configs.max_by_key(|c| c.num_samples()).unwrap()
+            })
             .unwrap();
 
         let winit_window = window.unwrap();
@@ -74,10 +76,8 @@ impl GlWindow {
 
         let gl_context = not_current.make_current(&gl_surface).unwrap();
 
-        let _ = gl_surface.set_swap_interval(
-            &gl_context,
-            SwapInterval::Wait(NonZeroU32::new(1).unwrap()),
-        );
+        let _ = gl_surface
+            .set_swap_interval(&gl_context, SwapInterval::Wait(NonZeroU32::new(1).unwrap()));
 
         let gl = unsafe {
             glow::Context::from_loader_function(|name| {
@@ -85,6 +85,7 @@ impl GlWindow {
                 gl_display.get_proc_address(&c_name) as *const _
             })
         };
+        let gl = Arc::new(gl);
 
         unsafe {
             gl.viewport(0, 0, width as i32, height as i32);
@@ -98,8 +99,28 @@ impl GlWindow {
         }
     }
 
-    pub fn raw(&self) -> &WinitWindow {
+    pub fn raw_handle(&self) -> &winit::window::Window {
         &self.winit_window
+    }
+
+    pub fn gl(&self) -> &glow::Context {
+        &self.gl
+    }
+
+    pub fn gl_cloned(&self) -> Arc<glow::Context> {
+        self.gl.clone()
+    }
+
+    pub fn id(&self) -> winit::window::WindowId {
+        self.winit_window.id()
+    }
+
+    pub fn request_redraw(&self) {
+        self.winit_window.request_redraw();
+    }
+
+    pub fn inner_size(&self) -> PhysicalSize<u32> {
+        self.winit_window.inner_size()
     }
 
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
@@ -117,11 +138,7 @@ impl GlWindow {
         }
     }
 
-    pub fn render_clear(&mut self, r: f32, g: f32, b: f32, a: f32) {
-        unsafe {
-            self.gl.clear_color(r, g, b, a);
-            self.gl.clear(glow::COLOR_BUFFER_BIT);
-        }
+    pub fn swap_buffers(&mut self) {
         self.gl_surface.swap_buffers(&self.gl_context).unwrap();
     }
 }

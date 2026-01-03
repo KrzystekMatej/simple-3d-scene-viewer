@@ -1,0 +1,5 @@
+title = "3D Scene Viewer"
+width = 1280
+height = 720
+min_width = 960
+min_height = 540

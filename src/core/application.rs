@@ -1,62 +1,160 @@
-use crate::{core::Time};
+use crate::core::{
+    asset_manager::AssetManager, gl_window::GlWindow, renderer::Renderer, scene::Scene, time::Time,
+};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow},
-    window::WindowId,
+    window::{WindowAttributes, WindowId},
 };
 
-pub trait WindowHandler {
-    fn id(&self) -> WindowId;
-    fn request_redraw(&self);
-    fn handle_event(&mut self, event_loop: &ActiveEventLoop, event: &WindowEvent);
+pub struct AppContext<'a> {
+    pub time: &'a Time,
+    pub scene: &'a mut Scene,
+    pub assets: &'a mut AssetManager,
+    pub renderer: &'a mut Renderer,
+    pub window: &'a mut GlWindow,
 }
 
-pub trait WindowFactory {
-    fn create(&mut self, event_loop: &ActiveEventLoop) -> Box<dyn WindowHandler>;
+pub trait AppClient {
+    fn on_window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        ctx: &mut AppContext,
+        event: &WindowEvent,
+    );
+    fn render(&mut self, ctx: &mut AppContext);
+    fn shutdown(&mut self, ctx: &mut AppContext);
+}
+
+pub trait AppFactory {
+    fn window_attributes(&mut self) -> WindowAttributes;
+    fn create_client(&mut self, ctx: &GlWindow) -> anyhow::Result<Box<dyn AppClient>>;
 }
 
 pub struct Application {
     time: Time,
-    main_window_factory: Box<dyn WindowFactory>,
-    main_window: Option<Box<dyn WindowHandler>>,
+    scene: Scene,
+    assets: AssetManager,
+    renderer: Option<Renderer>,
+    main_window: Option<GlWindow>,
+    app_factory: Box<dyn AppFactory>,
+    app_client: Option<Box<dyn AppClient>>,
 }
 
 impl Application {
-    pub fn new(main_window_factory: Box<dyn WindowFactory>) -> Self {
-        Application {
+    pub fn new(app_factory: Box<dyn AppFactory>) -> Self {
+        Self {
             time: Time::new(),
-            main_window_factory: main_window_factory,
+            scene: Scene::new(),
+            assets: AssetManager::new(),
+            renderer: None,
             main_window: None,
+            app_factory,
+            app_client: None,
         }
+    }
+
+    fn with_ctx<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&mut dyn AppClient, &mut AppContext),
+    {
+        let Some(client) = self.app_client.as_mut() else {
+            return;
+        };
+        let Some(window) = self.main_window.as_mut() else {
+            return;
+        };
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+
+        let mut ctx = AppContext {
+            time: &self.time,
+            scene: &mut self.scene,
+            assets: &mut self.assets,
+            renderer,
+            window,
+        };
+
+        f(client.as_mut(), &mut ctx);
     }
 }
 
 impl ApplicationHandler for Application {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         event_loop.set_control_flow(ControlFlow::Poll);
+
         if self.main_window.is_none() {
-            self.main_window = Some(self.main_window_factory.create(event_loop));
+            let attributes = self.app_factory.window_attributes();
+            self.main_window = Some(GlWindow::new(event_loop, attributes));
+        }
+
+        if let Some(window) = &self.main_window {
+            if self.renderer.is_none() {
+                self.renderer = Some(Renderer::new(window.gl_cloned()));
+            }
+
+            if self.app_client.is_none() {
+                match self.app_factory.create_client(window) {
+                    Ok(client) => {
+                        self.app_client = Some(client);
+                    }
+                    Err(err) => {
+                        log::error!("App client creation failed: {:#}", err);
+                    }
+                }
+            }
         }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        let main_window = match &mut self.main_window {
-            Some(w) => w,
-            None => return,
-        };
+        self.with_ctx(|client, ctx| {
+            if id != ctx.window.id() {
+                return;
+            }
 
-        if id != main_window.id() {
-            return;
-        }
+            let mut do_render = false;
 
-        main_window.handle_event(event_loop, &event);
+            match &event {
+                WindowEvent::Resized(size) => {
+                    ctx.window.resize(*size);
+                    ctx.window.request_redraw();
+                }
+                WindowEvent::ScaleFactorChanged { .. } => {
+                    let size = ctx.window.inner_size();
+                    ctx.window.resize(size);
+                    ctx.window.request_redraw();
+                }
+                WindowEvent::RedrawRequested => {
+                    do_render = true;
+                }
+                _ => {}
+            }
+
+            client.on_window_event(event_loop, ctx, &event);
+
+            if do_render {
+                client.render(ctx);
+                ctx.window.swap_buffers();
+            }
+        });
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         self.time.update();
-        if let Some(w) = &self.main_window {
+        self.scene.update();
+
+        if let Some(w) = self.main_window.as_ref() {
             w.request_redraw();
         }
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.with_ctx(|client, ctx| {
+            client.shutdown(ctx);
+        });
+
+        self.app_client = None;
     }
 }

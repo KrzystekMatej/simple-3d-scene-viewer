@@ -4,15 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-log = "0.4.22"
+log = "0.4.29"
 env_logger = "0.11.8"
-anyhow = "1.0.93"
-ctor = "0.3"
+anyhow = "1.0.100"
+ctor = "0.6.3"
 serde = { version = "1.0", features = ["derive"] }
-toml = "0.8"
-glow = "0.13"
+toml = "0.9.10"
 
-winit = { version = "0.30", features = ["rwh_06"] }
-glutin = "0.32"
-glutin-winit = "0.5"
+winit = { version = "0.30.12", features = ["rwh_06"] }
+glutin = "0.32.3"
+glutin-winit = "0.5.0"
+glow = "0.16.0"
+
+egui = "0.33.3"
+egui-winit = "0.33.3"
+egui_glow = { version = "0.33.3", features = ["winit"] }
 
