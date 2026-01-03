@@ -1,32 +1,83 @@
-use crate::{core::Time, core::Window};
-use serde::Deserialize;
+use crate::core::{
+    asset_manager::AssetManager, gl_window::GlWindow, renderer::Renderer, scene::Scene, time::Time,
+};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow},
-    window::WindowId,
+    window::{WindowAttributes, WindowId},
 };
 
-#[derive(Deserialize)]
-pub struct AppConfig {
-    pub window_title: String,
-    pub width: u32,
-    pub height: u32,
+pub struct AppContext<'a> {
+    pub time: &'a Time,
+    pub scene: &'a mut Scene,
+    pub assets: &'a mut AssetManager,
+    pub renderer: &'a mut Renderer,
+    pub window: &'a mut GlWindow,
 }
 
-const DEFAULT_CONFIG: &str = include_str!("app_config.toml");
+pub trait AppClient {
+    fn on_window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        ctx: &mut AppContext,
+        event: &WindowEvent,
+    );
+    fn render(&mut self, ctx: &mut AppContext);
+    fn shutdown(&mut self, ctx: &mut AppContext);
+}
+
+pub trait AppFactory {
+    fn window_attributes(&mut self) -> WindowAttributes;
+    fn create_client(&mut self, ctx: &GlWindow) -> anyhow::Result<Box<dyn AppClient>>;
+}
 
 pub struct Application {
     time: Time,
-    main_window: Option<Window>,
+    scene: Scene,
+    assets: AssetManager,
+    renderer: Option<Renderer>,
+    main_window: Option<GlWindow>,
+    app_factory: Box<dyn AppFactory>,
+    app_client: Option<Box<dyn AppClient>>,
 }
 
 impl Application {
-    pub fn new() -> Self {
-        Application {
+    pub fn new(app_factory: Box<dyn AppFactory>) -> Self {
+        Self {
             time: Time::new(),
+            scene: Scene::new(),
+            assets: AssetManager::new(),
+            renderer: None,
             main_window: None,
+            app_factory,
+            app_client: None,
         }
+    }
+
+    fn with_ctx<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&mut dyn AppClient, &mut AppContext),
+    {
+        let Some(client) = self.app_client.as_mut() else {
+            return;
+        };
+        let Some(window) = self.main_window.as_mut() else {
+            return;
+        };
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+
+        let mut ctx = AppContext {
+            time: &self.time,
+            scene: &mut self.scene,
+            assets: &mut self.assets,
+            renderer,
+            window,
+        };
+
+        f(client.as_mut(), &mut ctx);
     }
 }
 
@@ -35,63 +86,75 @@ impl ApplicationHandler for Application {
         event_loop.set_control_flow(ControlFlow::Poll);
 
         if self.main_window.is_none() {
-            let config: AppConfig =
-                toml::from_str(DEFAULT_CONFIG).expect("Failed to load default configuration");
-            let window = Window::create_main_window(
-                event_loop,
-                &config.window_title,
-                config.width,
-                config.height,
-            );
-            self.main_window = Some(window);
+            let attributes = self.app_factory.window_attributes();
+            self.main_window = Some(GlWindow::new(event_loop, attributes));
+        }
+
+        if let Some(window) = &self.main_window {
+            if self.renderer.is_none() {
+                self.renderer = Some(Renderer::new(window.gl_cloned()));
+            }
+
+            if self.app_client.is_none() {
+                match self.app_factory.create_client(window) {
+                    Ok(client) => {
+                        self.app_client = Some(client);
+                    }
+                    Err(err) => {
+                        log::error!("App client creation failed: {:#}", err);
+                    }
+                }
+            }
         }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        let main_window = match &mut self.main_window {
-            Some(w) => w,
-            None => return,
-        };
+        self.with_ctx(|client, ctx| {
+            if id != ctx.window.id() {
+                return;
+            }
 
-        if id != main_window.raw().id() {
-            return;
-        }
+            let mut do_render = false;
 
-        match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => {
-                main_window.resize(size);
-                main_window.raw().request_redraw();
+            match &event {
+                WindowEvent::Resized(size) => {
+                    ctx.window.resize(*size);
+                    ctx.window.request_redraw();
+                }
+                WindowEvent::ScaleFactorChanged { .. } => {
+                    let size = ctx.window.inner_size();
+                    ctx.window.resize(size);
+                    ctx.window.request_redraw();
+                }
+                WindowEvent::RedrawRequested => {
+                    do_render = true;
+                }
+                _ => {}
             }
-            WindowEvent::ScaleFactorChanged { .. } => {
-                let size = main_window.raw().inner_size();
-                main_window.resize(size);
-                main_window.raw().request_redraw();
+
+            client.on_window_event(event_loop, ctx, &event);
+
+            if do_render {
+                client.render(ctx);
+                ctx.window.swap_buffers();
             }
-            WindowEvent::RedrawRequested => {
-                main_window.render_clear(0.1, 0.12, 0.16, 1.0);
-            }
-            _ => {}
-        }
+        });
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         self.time.update();
-        if let Some(w) = &self.main_window {
-            w.raw().request_redraw();
+        self.scene.update();
+
+        if let Some(w) = self.main_window.as_ref() {
+            w.request_redraw();
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.with_ctx(|client, ctx| {
+            client.shutdown(ctx);
+        });
 
-    #[test]
-    fn default_config_parses() {
-        let cfg: AppConfig = toml::from_str(DEFAULT_CONFIG).unwrap();
-        assert!(!cfg.window_title.is_empty());
-        assert!(cfg.width > 0);
-        assert!(cfg.height > 0);
+        self.app_client = None;
     }
 }
